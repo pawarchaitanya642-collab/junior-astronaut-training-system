@@ -41,7 +41,9 @@ const paths = {
   gauge: '<path d="M4 18a9 9 0 1 1 16 0H4Z"/><path d="m12 14 4-5M7 14h.01M12 7h.01M17 14h.01"/>',
   heart: '<path d="M12 21 4 13a5 5 0 0 1 8-6 5 5 0 0 1 8 6l-8 8Z"/>',
   flag: '<path d="M5 22V3m0 1c5-4 9 4 15 0v10c-6 4-10-4-15 0"/>',
-  orbit: '<circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="11" ry="5" transform="rotate(-30 12 12)"/><circle cx="19" cy="6" r="1.5"/>'
+  orbit: '<circle cx="12" cy="12" r="3"/><ellipse cx="12" cy="12" rx="11" ry="5" transform="rotate(-30 12 12)"/><circle cx="19" cy="6" r="1.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18M4.5 7h15m-15 10h15"/>',
+  refresh: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.6 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12.4-3"/>'
 };
 
 export function icon(name, cls = '') {

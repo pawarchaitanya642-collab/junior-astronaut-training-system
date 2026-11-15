@@ -1,6 +1,7 @@
 import { icon, brandMark, heroArt, missionArt, planetArt } from './art.js';
 import { MISSIONS, ACHIEVEMENTS, FACTS, STAR_NAMES, STAR_ROUTE, rankFor, earnedAchievements } from './data.js';
 import { WORLD, createGameState, updateGame, drawGame, gameHUD, gameObjectives, gameNotice, gameScore, selectStar, selectSystem, answerSystem, startLaunch, pointerGame } from './games.js';
+import { fetchEarthEvents } from './nasa.js';
 
 const STORAGE_KEY = 'orbit-academy-v1';
 const missionById = Object.fromEntries(MISSIONS.map(m => [m.id, m]));
@@ -14,9 +15,10 @@ const navItems = [
   { page: 'mission-control', label: 'Mission control', icon: 'grid' },
   { page: 'training', label: 'Training deck', icon: 'rocket', count: 4 },
   { page: 'log', label: 'Flight log', icon: 'book' },
-  { page: 'achievements', label: 'Achievements', icon: 'award' }
+  { page: 'achievements', label: 'Achievements', icon: 'award' },
+  { page: 'earth-watch', label: 'Earth watch', icon: 'globe' }
 ];
-const pageNames = { 'mission-control': 'Mission control', training: 'Training deck', log: 'Flight log', achievements: 'Achievements' };
+const pageNames = { 'mission-control': 'Mission control', training: 'Training deck', log: 'Flight log', achievements: 'Achievements', 'earth-watch': 'Earth watch' };
 const failureReasons = {
   'off-pad': 'You touched down outside the landing zone. Aim for the green pad and save a little fuel for the final brake.',
   descent: 'That touchdown was too fast. Start your braking burn earlier and watch the descent speed.',
@@ -56,6 +58,7 @@ let logFilters = { query: '', result: 'all', sort: 'newest' };
 let active = null;
 let resizeObserver = null;
 const held = new Set();
+const earthWatch = { events: [], filter: 'all', loadedAt: 0, status: 'idle', error: '', request: null, requestId: 0, visibleCount: 12 };
 
 function saveProgress() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(progress)); } catch {}
@@ -206,10 +209,14 @@ function navigate(page) {
 function renderPage(scrollTop = true) {
   const main = document.getElementById('main-content');
   if (!main) return;
-  const templates = { 'mission-control': missionControlPage, training: trainingPage, log: logPage, achievements: achievementsPage };
+  const templates = { 'mission-control': missionControlPage, training: trainingPage, log: logPage, achievements: achievementsPage, 'earth-watch': earthWatchPage };
   main.innerHTML = `<div class="page-enter">${templates[currentPage]()}</div>`;
   updateChrome();
   if (currentPage === 'log') renderLogTable();
+  if (currentPage === 'earth-watch') {
+    renderEarthWatchContent();
+    void refreshEarthWatch();
+  }
   if (scrollTop) window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
@@ -233,7 +240,7 @@ function missionControlPage() {
   const earned = earnedAchievements(progress);
   const lunarDone = !!progress.completed.lunar;
   const preview = [ACHIEVEMENTS[0], ACHIEVEMENTS[1], ACHIEVEMENTS[2], ACHIEVEMENTS[3]];
-  return `<div class="welcome-row"><div><div class="eyebrow">Your space journey</div><h1>Welcome aboard, ${escapeHTML(progress.callsign)}.</h1><p>Big dreams start with small steps. Your next mission is waiting.</p></div><div class="day-chip">${icon('sun')}<div><strong>TRAINING DAY ${String(trainingDay()).padStart(2, '0')}</strong><span>${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span></div></div></div><section class="hero" aria-label="Featured lunar landing mission"><div class="hero-art">${heroArt()}</div><div class="hero-content"><span class="mission-tag">${icon('rocket')}MISSION 01 · ${lunarDone ? 'MISSION COMPLETE' : 'READY FOR LAUNCH'}</span><h2>The Moon is<br>your <span>classroom.</span></h2><p class="hero-copy">Strap in, cadet. Learn to fly, navigate by the stars, and bring your crew safely home — one mission at a time.</p><div class="hero-actions"><button class="btn btn-primary" data-mission="lunar">${lunarDone ? 'Fly the Moon again' : 'Start lunar landing'} ${icon('arrowRight')}</button><button class="btn btn-ghost" data-action="manual">${icon('book')}Flight manual</button></div><div class="hero-meta"><span>${icon('clock')}2–3 min</span><span>${icon('shield')}Rookie friendly</span><span class="xp">${icon('star')}+150 XP</span></div></div><div class="hero-telemetry">${icon('radio')}<div><strong>TRANQUILITY BASE</strong><span>LUNAR MODULE · SYSTEMS NOMINAL</span></div></div></section><div class="stat-strip"><div class="stat-card"><div class="stat-icon">${icon('flag')}</div><div><div class="stat-value">${count} <small>/ 4</small></div><div class="stat-label">Missions completed</div></div><span class="stat-note">${count === 4 ? 'All mastered' : 'All unlocked'}</span></div><div class="stat-card"><div class="stat-icon">${icon('sparkle')}</div><div><div class="stat-value">${progress.xp.toLocaleString()}</div><div class="stat-label">Training XP earned</div></div><span class="stat-note">${rankFor(progress.xp).name}</span></div><div class="stat-card"><div class="stat-icon">${icon('clock')}</div><div><div class="stat-value">${formatDuration(progress.flightSeconds)}</div><div class="stat-label">Time in the simulator</div></div><span class="stat-note">Logged live</span></div></div><div class="content-grid"><section><div class="section-heading"><div><h2>The training deck</h2><p>Real skills. Out-of-this-world adventures.</p></div><button class="text-link" data-page="training">View all missions ${icon('arrowRight')}</button></div><div class="mission-grid">${MISSIONS.map((m, i) => missionCard(m, i)).join('')}</div></section><aside class="aside-stack">${flightPlanMarkup()}${intelMarkup()}</aside></div><section class="achievement-preview"><div class="achievement-preview-copy"><h2>Little wins. Big discoveries.</h2><p>${earned.length} of ${ACHIEVEMENTS.length} patches earned. Every mission brings a new one within reach.</p></div><div class="patch-row">${preview.map(a => `<button class="patch-button" data-achievement="${a.id}" aria-label="${a.title} patch, ${earned.includes(a.id) ? 'earned' : 'locked'}">${patchMarkup(a, !earned.includes(a.id), true)}</button>`).join('')}</div><button class="text-link" data-page="achievements">All patches ${icon('arrowRight')}</button></section>`;
+  return `<div class="welcome-row"><div><div class="eyebrow">Your space journey</div><h1>Welcome aboard, ${escapeHTML(progress.callsign)}.</h1><p>Big dreams start with small steps. Your next mission is waiting.</p></div><div class="day-chip">${icon('sun')}<div><strong>TRAINING DAY ${String(trainingDay()).padStart(2, '0')}</strong><span>${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span></div></div></div><section class="hero" aria-label="Featured lunar landing mission"><div class="hero-art">${heroArt()}</div><div class="hero-content"><span class="mission-tag">${icon('rocket')}MISSION 01 · ${lunarDone ? 'MISSION COMPLETE' : 'READY FOR LAUNCH'}</span><h2>The Moon is<br>your <span>classroom.</span></h2><p class="hero-copy">Strap in, cadet. Learn to fly, navigate by the stars, and bring your crew safely home — one mission at a time.</p><div class="hero-actions"><button class="btn btn-primary" data-mission="lunar">${lunarDone ? 'Fly the Moon again' : 'Start lunar landing'} ${icon('arrowRight')}</button><button class="btn btn-ghost" data-action="manual">${icon('book')}Flight manual</button></div><div class="hero-meta"><span>${icon('clock')}2–3 min</span><span>${icon('shield')}Rookie friendly</span><span class="xp">${icon('star')}+150 XP</span></div></div><div class="hero-telemetry">${icon('radio')}<div><strong>TRANQUILITY BASE</strong><span>LUNAR MODULE · SYSTEMS NOMINAL</span></div></section><section class="earth-home-teaser"><div class="earth-teaser-icon">${icon('globe')}</div><div><div class="eyebrow">Explore NASA open data</div><h2>Mission control reaches Earth, too.</h2><p>Explore current open natural-event reports from NASA EONET on an interactive map.</p></div><button class="btn btn-secondary btn-small" data-page="earth-watch">Open Earth watch ${icon('arrowRight')}</button></section><div class="stat-strip"><div class="stat-card"><div class="stat-icon">${icon('flag')}</div><div><div class="stat-value">${count} <small>/ 4</small></div><div class="stat-label">Missions completed</div></div><span class="stat-note">${count === 4 ? 'All mastered' : 'All unlocked'}</span></div><div class="stat-card"><div class="stat-icon">${icon('sparkle')}</div><div><div class="stat-value">${progress.xp.toLocaleString()}</div><div class="stat-label">Training XP earned</div></div><span class="stat-note">${rankFor(progress.xp).name}</span></div><div class="stat-card"><div class="stat-icon">${icon('clock')}</div><div><div class="stat-value">${formatDuration(progress.flightSeconds)}</div><div class="stat-label">Time in the simulator</div></div><span class="stat-note">Logged live</span></div></div><div class="content-grid"><section><div class="section-heading"><div><h2>The training deck</h2><p>Real skills. Out-of-this-world adventures.</p></div><button class="text-link" data-page="training">View all missions ${icon('arrowRight')}</button></div><div class="mission-grid">${MISSIONS.map((m, i) => missionCard(m, i)).join('')}</div></section><aside class="aside-stack">${flightPlanMarkup()}${intelMarkup()}</aside></div><section class="achievement-preview"><div class="achievement-preview-copy"><h2>Little wins. Big discoveries.</h2><p>${earned.length} of ${ACHIEVEMENTS.length} patches earned. Every mission brings a new one within reach.</p></div><div class="patch-row">${preview.map(a => `<button class="patch-button" data-achievement="${a.id}" aria-label="${a.title} patch, ${earned.includes(a.id) ? 'earned' : 'locked'}">${patchMarkup(a, !earned.includes(a.id), true)}</button>`).join('')}</div><button class="text-link" data-page="achievements">All patches ${icon('arrowRight')}</button></section>`;
 }
 function trainingPage() {
   const filtered = MISSIONS.filter(m => trainingFilter === 'all' || m.filter === trainingFilter);
@@ -266,6 +273,83 @@ function achievementsPage() {
   const rank = rankFor(progress.xp);
   const percent = rank.next ? Math.min(100, (progress.xp - rank.min) / (rank.next.min - rank.min) * 100) : 100;
   return `<div class="page-header"><div><div class="eyebrow">Achievements</div><h1>Your patch collection.</h1><p>${earned.length} of ${ACHIEVEMENTS.length} earned. Wear every small victory with pride.</p></div></div><div class="rank-overview"><div class="rank-emblem">${icon('helmet')}</div><div class="rank-overview-info"><h2>${rank.name}</h2><p>${rank.next ? `${rank.next.min - progress.xp} XP until ${rank.next.name}. Keep flying, cadet.` : 'You have reached the academy’s highest rank. Outstanding work.'}</p><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div></div><div class="rank-overview-xp">${progress.xp.toLocaleString()}<small>total XP</small></div></div><div class="achievement-grid">${ACHIEVEMENTS.map(a => { const has = earned.includes(a.id); return `<button class="achievement-card" data-achievement="${a.id}">${patchMarkup(a, !has)}<h3>${a.title}</h3><p>${a.description}</p><span class="achievement-state ${has ? '' : 'locked'}">${icon(has ? 'check' : 'lock')}${has ? 'Patch earned' : 'Still to discover'}</span></button>`; }).join('')}</div>`;
+}
+
+function earthWatchPage() {
+  return `<div class="page-header"><div><div class="eyebrow">NASA open data · learning lab</div><h1>Earth, in motion.</h1><p>Explore open natural-event reports from NASA’s Earth Observatory Natural Event Tracker.</p></div><button class="btn btn-secondary" data-action="earth-refresh">${icon('refresh')}Refresh feed</button></div><section class="earth-project panel"><div class="earth-project-icon">${icon('globe')}</div><div><div class="eyebrow">The idea</div><h2>Make Earth science easier to explore.</h2><p>Orbit Academy pairs hands-on spaceflight simulations with a window into the changing Earth. This explorer turns NASA’s open event catalog into a map and short, readable field notes for curious learners.</p></div></section><section class="earth-feed-section" aria-labelledby="earth-feed-title"><div class="earth-section-heading"><div><div class="eyebrow">Open event catalog</div><h2 id="earth-feed-title">What is happening on Earth?</h2><p>Open events only. Reports and locations can change as source data is updated.</p></div><a class="source-link" href="https://eonet.gsfc.nasa.gov/" target="_blank" rel="noopener noreferrer">About NASA EONET ${icon('arrowUpRight')}</a></div><div id="earth-watch-feed" aria-live="polite"></div></section><section class="earth-method-grid" aria-label="Project approach"><article class="earth-method-card"><span class="eyebrow">01 · Discover</span><h3>Start with real reports</h3><p>NASA EONET organizes natural-event information from NASA and partner sources, including satellite observations and other reporting systems.</p></article><article class="earth-method-card"><span class="eyebrow">02 · Explore</span><h3>Connect data to place</h3><p>Use the map, categories, dates, and NASA event records to ask questions about where events are being reported and how the catalog is organized.</p></article><article class="earth-method-card"><span class="eyebrow">03 · Learn</span><h3>Practice scientific curiosity</h3><p>Every point is a starting place for investigation, not a risk score. Compare the event record with its linked source before drawing conclusions.</p></article></section><p class="earth-disclaimer">Educational prototype — not an emergency alert, risk assessment, or operational NASA product. Event locations are approximate; the feed requires an internet connection. Flight missions are conceptual learning activities, not operational flight software.</p>`;
+}
+function earthDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Date not provided' : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+function earthCategoryColor(category) {
+  const palette = ['orange', 'cyan', 'lilac', 'green', 'yellow', 'blue'];
+  let hash = 0;
+  for (const char of category) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return palette[hash % palette.length];
+}
+function earthMapMarkup(events) {
+  const mapped = events.filter(event => Number.isFinite(event.longitude) && Number.isFinite(event.latitude)).slice(0, 60);
+  if (!mapped.length) return `<div class="earth-map-empty">No mappable events in this category.</div>`;
+  const categories = [...new Set(mapped.map(event => event.categories[0] || 'Other'))];
+  const marks = mapped.map(event => {
+    const x = ((event.longitude + 180) / 360 * 720).toFixed(1);
+    const y = ((90 - event.latitude) / 180 * 360).toFixed(1);
+    const title = `${event.title} · ${event.latitude.toFixed(2)}°, ${event.longitude.toFixed(2)}°`;
+    return `<a class="earth-map-marker ${earthCategoryColor(event.categories[0] || '')}" href="${escapeHTML(event.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHTML(title)}" title="${escapeHTML(title)}"><circle cx="${x}" cy="${y}" r="5"><title>${escapeHTML(title)}</title></circle></a>`;
+  }).join('');
+  const legend = categories.map(category => `<span><i class="earth-map-legend-dot ${earthCategoryColor(category)}"></i>${escapeHTML(category)}</span>`).join('');
+  return `<div class="earth-map-wrap"><svg class="earth-map" viewBox="0 0 720 360" role="img" aria-label="Approximate locations of open NASA EONET events. Select a point to open its NASA record."><rect class="map-ocean" width="720" height="360" rx="14"/><g class="map-grid"><path d="M0 60H720M0 120H720M0 180H720M0 240H720M0 300H720M90 0V360M180 0V360M270 0V360M360 0V360M450 0V360M540 0V360M630 0V360"/></g><g class="map-land"><path d="M42 56 74 40 112 43 138 56 159 75 147 91 127 95 120 113 103 123 90 112 79 92 61 85ZM137 122 163 134 181 160 177 193 162 226 153 261 139 284 127 255 121 225 112 194 117 163Z"/><path d="M170 44 194 35 214 48 211 69 190 77 176 66ZM274 78 298 63 326 67 339 80 325 94 299 91 285 103 275 95ZM307 106 337 103 363 118 370 148 359 184 344 219 325 242 310 221 302 190 292 160 296 130Z"/><path d="M348 55 385 42 430 50 458 64 493 64 529 79 558 74 593 90 616 111 643 119 660 138 644 151 614 142 590 153 558 146 538 160 516 154 498 135 475 132 458 115 432 121 418 103 397 107 382 88 357 87ZM545 174 568 171 588 184 581 201 559 201 545 190ZM624 235 648 229 670 241 665 260 642 266 626 253Z"/></g><g class="map-points">${marks}</g></svg><div class="earth-map-legend" aria-label="Map event categories">${legend}</div><div class="earth-map-caption">${icon('target')}Approximate event locations · select a point to open its NASA event record</div></div>`;
+}
+function earthEventMarkup(event) {
+  const category = event.categories[0] || 'Uncategorized';
+  const magnitude = event.magnitude === null ? '' : `<span>${escapeHTML(event.magnitude.toLocaleString())} ${escapeHTML(event.magnitudeUnit)}</span>`;
+  return `<article class="earth-event-card"><div class="earth-event-top"><span class="earth-category ${earthCategoryColor(category)}">${escapeHTML(category)}</span><time datetime="${escapeHTML(event.date)}">${earthDate(event.date)}</time></div><h3>${escapeHTML(event.title)}</h3><p class="earth-event-location">${icon('target')}${event.latitude.toFixed(2)}°, ${event.longitude.toFixed(2)}° ${magnitude}</p><a class="earth-record-link" href="${escapeHTML(event.url)}" target="_blank" rel="noopener noreferrer">Open NASA event record ${icon('arrowUpRight')}</a></article>`;
+}
+function renderEarthWatchContent() {
+  const feed = document.getElementById('earth-watch-feed');
+  if (!feed) return;
+  const categories = [...new Set(earthWatch.events.flatMap(event => event.categories))].sort((a, b) => a.localeCompare(b));
+  if (earthWatch.filter !== 'all' && !categories.includes(earthWatch.filter)) earthWatch.filter = 'all';
+  const events = earthWatch.filter === 'all' ? earthWatch.events : earthWatch.events.filter(event => event.categories.includes(earthWatch.filter));
+  const updated = earthWatch.loadedAt ? new Date(earthWatch.loadedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+  const status = earthWatch.status === 'loading'
+    ? `<div class="earth-feed-status" role="status">${icon('refresh')}${earthWatch.events.length ? 'Updating NASA’s event feed…' : 'Loading open events from NASA EONET…'}</div>`
+    : earthWatch.status === 'error'
+      ? `<div class="earth-feed-status error" role="alert">${icon('info')}<span>${escapeHTML(earthWatch.error)} ${earthWatch.events.length ? 'Showing the last successful results.' : 'Check your connection and try again.'}</span><button class="btn btn-secondary btn-small" data-action="earth-refresh">${icon('refresh')}Try again</button></div>`
+      : `<div class="earth-feed-status" role="status">${icon('check')}${earthWatch.events.length} mappable open events${updated ? ` · Updated ${updated}` : ''}</div>`;
+  if (earthWatch.status === 'error' && !earthWatch.events.length) {
+    feed.innerHTML = `${status}<div class="earth-empty">${icon('globe')}<h3>Live data is unavailable.</h3><p>The event catalog could not be reached. The training simulator still works offline.</p></div>`;
+    return;
+  }
+  const filters = ['all', ...categories].map(category => `<button class="earth-filter ${earthWatch.filter === category ? 'active' : ''}" data-earth-filter="${escapeHTML(category)}" aria-pressed="${earthWatch.filter === category}">${category === 'all' ? 'All events' : escapeHTML(category)}${category === 'all' ? `<span>${earthWatch.events.length}</span>` : `<span>${earthWatch.events.filter(event => event.categories.includes(category)).length}</span>`}</button>`).join('');
+  const visible = events.slice(0, earthWatch.visibleCount);
+  const eventList = visible.map(earthEventMarkup).join('');
+  feed.innerHTML = `${status}<div class="earth-filter-row" role="group" aria-label="Filter NASA events by category">${filters}</div><div class="earth-explorer-grid">${earthMapMarkup(events)}<div class="earth-event-list">${events.length ? eventList : '<div class="earth-empty"><h3>No open events in this category.</h3><p>Select another category to explore the feed.</p></div>'}${events.length > visible.length ? `<button class="btn btn-secondary earth-more" data-action="earth-more">Show ${Math.min(12, events.length - visible.length)} more events</button>` : ''}</div></div><p class="earth-data-note">Feed: <a href="https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=100" target="_blank" rel="noopener noreferrer">NASA EONET v3 open-events API</a>. Categories, dates, and magnitudes come from the event record when available. Magnitude units vary by event.</p>`;
+}
+async function refreshEarthWatch(force = false) {
+  if (earthWatch.request && !force) return earthWatch.request;
+  if (!force && earthWatch.loadedAt && Date.now() - earthWatch.loadedAt < 5 * 60 * 1000) return;
+  const requestId = ++earthWatch.requestId;
+  earthWatch.status = 'loading';
+  earthWatch.error = '';
+  renderEarthWatchContent();
+  const request = fetchEarthEvents();
+  earthWatch.request = request;
+  try {
+    const events = await request;
+    if (requestId !== earthWatch.requestId) return;
+    earthWatch.events = events;
+    earthWatch.loadedAt = Date.now();
+    earthWatch.status = 'ready';
+  } catch (error) {
+    if (requestId !== earthWatch.requestId) return;
+    earthWatch.status = 'error';
+    earthWatch.error = error instanceof Error ? error.message : 'The NASA EONET feed could not be loaded.';
+  } finally {
+    if (requestId === earthWatch.requestId) earthWatch.request = null;
+  }
+  renderEarthWatchContent();
 }
 
 function infoHeader(eyebrow, title) {
@@ -565,7 +649,7 @@ function launchRocket() {
 }
 
 function handleClick(event) {
-  const target = event.target.closest('button, [data-log], [data-page], [data-mission], [data-action], [data-filter], [data-achievement], [data-game-action], [data-patch-color], [data-system-select], [data-system-answer], [data-star]');
+  const target = event.target.closest('button, [data-log], [data-page], [data-mission], [data-action], [data-filter], [data-achievement], [data-game-action], [data-patch-color], [data-system-select], [data-system-answer], [data-star], [data-earth-filter]');
   if (!target || target.disabled) return;
   if (target.dataset.gameAction) {
     const action = target.dataset.gameAction;
@@ -584,6 +668,12 @@ function handleClick(event) {
   if (target.dataset.star !== undefined && active && isLive()) { handleGameEvent(selectStar(active.g, Number(target.dataset.star))); return; }
   if (target.dataset.systemSelect && active && isLive()) { if (selectSystem(active.g, target.dataset.systemSelect)) handleGameEvent({ type: 'select' }); return; }
   if (target.dataset.systemAnswer !== undefined && active && isLive()) { handleGameEvent(answerSystem(active.g, Number(target.dataset.systemAnswer))); return; }
+  if (target.dataset.earthFilter !== undefined) {
+    earthWatch.filter = target.dataset.earthFilter;
+    earthWatch.visibleCount = 12;
+    renderEarthWatchContent();
+    return;
+  }
   if (target.dataset.patchColor) {
     profilePatch = target.dataset.patchColor;
     infoContent.querySelectorAll('[data-patch-color]').forEach(b => { const selected = b.dataset.patchColor === profilePatch; b.classList.toggle('selected', selected); b.setAttribute('aria-pressed', String(selected)); });
@@ -604,6 +694,8 @@ function handleClick(event) {
   else if (action === 'fact') { factIndex = (factIndex + 1) % FACTS.length; const fact = FACTS[factIndex]; document.getElementById('intel-title').textContent = fact.title; document.getElementById('intel-text').textContent = fact.text; sound('click'); }
   else if (action === 'export') exportLog();
   else if (action === 'clear-log') { logFilters = { query: '', result: 'all', sort: 'newest' }; const search = document.getElementById('log-search'); const result = document.getElementById('log-result'); const sort = document.getElementById('log-sort'); if (search) search.value = ''; if (result) result.value = 'all'; if (sort) sort.value = 'newest'; renderLogTable(); sound('click'); }
+  else if (action === 'earth-refresh') void refreshEarthWatch(true);
+  else if (action === 'earth-more') { earthWatch.visibleCount += 12; renderEarthWatchContent(); }
 }
 const keyMap = { arrowleft: 'left', a: 'left', arrowright: 'right', d: 'right', arrowup: 'up', w: 'up', arrowdown: 'down', s: 'down', ' ': 'brake' };
 function handleKeyDown(event) {
